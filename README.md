@@ -1,63 +1,99 @@
-# BPSC — Bit-Plane Spline & Procedural Texture Codec
+# BPSC 1.1 — Bit-Plane Spline & Procedural Codec
 
-**BPSC** is an experimental, asymmetric, GPU-oriented texture compression format designed to pack high-resolution game textures, masks, and UI assets into a fraction of their original size while enabling **infinite zoom (resolution independence)** and **zero-overhead hardware mipmapping**.
+An asymmetric vector-procedural texture compression format: minimal bytes on disk, evaluation on the fly on the GPU, and zero-cost mipmaps via bit-plane pruning.
 
-> **Status:** Early R&D / Architecture & Python Reference Prototype  
-> **Looking for:** Graphics Programmers (WebGPU / Vulkan / GLSL / HLSL) & Compression Enthusiasts to build the first GPU compute/mesh shader rasterizer.
+## Status
 
----
-
-## 💡 Core Idea
-
-Modern games weigh 100–200+ GB largely due to raster textures (BC7/ASTC) and pre-calculated mipmap chains (+33% memory overhead). **BPSC** replaces dense pixel grids with a hybrid vector-procedural representation:
-
-1. **Anisotropic Smoothing (Surface Blur):** Strips high-frequency sensor noise while preserving sharp object boundaries.
-2. **Gray-Code Bit-Plane Slicing:** Decomposes Luma (and compressed 1D/2D Chroma) into 8 bit-planes without binary boundary artifacts.
-3. **Catmull-Rom Splines + Shared Vertex Buffer:** Vectorizes bit-plane contours using smooth splines without extra control points. Overlapping vertices across different bit-planes are deduplicated into a single indexed vertex stack, preventing quantization halos between layers.
-4. **Iterative Procedural Noise (Matching Pursuit):** Reconstructs natural micro-textures (skin, asphalt, foliage, grain) via parametric noise generators (Perlin, Simplex, Voronoi) masked by splines, minimizing residual entropy.
-5. **Zero-Cost Hardware Mipmapping:** Mip-levels are generated on the fly with **0 bytes of extra storage** by bit-shifting vertex coordinates (`coord >> mip_level`), dropping lower bit-planes, and culling zero-area micro-splines directly in the vertex/mesh shader.
+Specification version: **1.1-Draft (0x02)**.
+This is a stable specification intended for reference implementation: 32-byte header, container size aligned to 512 KiB, deterministic pipeline. The prototype in `prototype.py` belongs to the earlier architecture (16-byte header, Hilbert-curve chroma, noise before filtering) and is **not a reference for 1.1**.
 
 ---
 
-## 🏗️ Encoding Pipeline
+## Why It Matters
 
-```text
-[Original Image] 
-       │
-       ├──► Iterative Procedural Noise Extraction (Matching Pursuit) ──► [Noise Params & Masks]
-       ▼
-[Surface Blur (Bilateral Filter)]
-       │
-       ├──► Multi-Scale Edge Analysis (0.25x / 1x / 4x Pyramid)
-       ▼
-[Gray Code Conversion] ──► [8 Bit-Planes]
-       │
-       ▼
-[Catmull-Rom Spline Vectorization] ──► [Shared Vertex Buffer] ──► [.bpsc Binary]
-```
+- **VRAM savings.** The texture is not stored as a pixel array: it is evaluated at render time (mesh/fragment/compute shaders).
+- **Resolution independence.** Boundaries are splines, gradients are analytic profiles (reserved for 1.2). Zoom without pixelation.
+- **Zero-cost mipmaps.** LOD levels are produced by coordinate shifting and dropping lower bit-planes — 0 bytes of additional storage.
+- **Asymmetry.** The encoder may be arbitrarily heavy (RDO, Matching Pursuit); the decoder is deterministic and linear in the number of splines.
 
 ---
 
-## 🚀 Quick Start (Python Prototype)
+## What to Encode — and What Comes with Caveats
 
-The repository includes a reference CPU prototype (`prototype.py`) demonstrating the core pipeline: Surface Blur, Gray-code slicing, Catmull-Rom spline fitting, Shared Vertex Buffer deduplication, and bit-shift mipmapping.
-
-### Run Locally
-```bash
-pip install opencv-python numpy
-python prototype.py
-```
-*(If no `test.jpg` is provided in the folder, the script automatically generates a synthetic test pattern and outputs size benchmarks alongside a visual comparison sheet).*
+**Recommended:** albedo, masks, UI atlases, AO, roughness, metallic.
+**With caveats (Data mode):** octahedral normals — allowed as an experimental input, but perceptual and physical accuracy is not guaranteed. Artifacts are possible (banding, lighting streaks).
+**Not intended:** height/displacement maps and any data where subpixel gradient accuracy is critical — the format is not designed for such scenarios.
 
 ---
 
-## 🤝 How to Contribute / Open Tasks
+## Key Features of Version 1.1
 
-The mathematical architecture and binary container format are specified in [`SPECIFICATION.md`](SPECIFICATION.md). We are currently looking for contributors to tackle the next milestones:
+- **32-byte header.** Contains mode flags, dimensions, PayloadLength, CRC32, ChannelFlags (signed channels), and 512 KiB alignment.
+- **Bit-planes (8 per channel).** Gray code + isolines with a step of `2^(7−b)`. The lowest bit holds fine gradations, the highest holds coarse contrast.
+- **Content modes (`ContentClass`):**
+  - **Artistic:** the full pipeline (bilateral filter, noise layers, adaptive precision).
+  - **Data:** no bilateral filter, hard spline epsilon floor (`ε ≤ 0.5`), noise layers optional. For AO/roughness/metallic and octahedral normals.
+- **Signed channels (`ChannelFlags`).** Octahedral normals are stored as offset-binary (`value + 128`) and go through the standard pipeline; the decoder subtracts 128 after Gray-code reconstruction.
+- **Encoding pipeline (strictly in order):**
+  1. Channel decomposition (Y, Cb, Cr, A).
+  2. Bilateral filter (skipped in Data mode).
+  3. Residual = original − filtered.
+  4. Matching Pursuit on the residual (all frequencies, global masks, decision made by RDO).
+  5. Multi-scale edge analysis (0.25× / 1× / 4×).
+  6. Gray code → 8 bit-planes per channel.
+  7. Spline vectorization (Catmull-Rom splines), vertex deduplication, Shared Vertex Buffer.
+- **Procedural noise layers.** Applied after Gray-code reconstruction; ordered by frequency; masked contribution; LOD amplitude falloff via `AmplitudeFalloff`.
+- **Determinism.** Reference arithmetic is fixed-point Q24.8; generators are integer-only, no floating point; results must match bit for bit.
+- **Reserved extensions (1.2):** gradient fills (analytic profile between guide curves), tiling, HDR (>8 bits).
 
-- [ ] **WebGPU / WebGL2 Demo:** A shader-based decoder rendering `.bpsc` binary buffers directly on the GPU with real-time 50x zoom.
-- [ ] **Sharp Corner Detection:** Adding 1-bit vertex curvature flags (`smooth` vs `sharp`) to the Shared Vertex Buffer.
-- [ ] **Procedural Noise Matcher:** Implementing RDO-guided Perlin/Simplex noise subtraction in the encoder.
-- [ ] **C++ / Rust Fast Encoder:** Porting the contour extraction and RDO optimization from Python.
+---
 
-If you are interested in graphics programming, demoscene compression, or GPU compute shaders — feel free to open an **Issue** or start a **Discussion**!
+## File Format (.bpsc)
+
+- **Header:** 32 bytes (little-endian), Magic `BPSC`, Version `0x02`, flags, dimensions, NumVertices, NumNoiseLayers, CompressionMethod, ChannelFlags, PayloadLength, CRC32.
+- **Alignment:** file size ≥ 512 KiB and a multiple of 512 KiB; the tail is zero-padded; decoders read only up to `PayloadLength`.
+- **Payload:** Bit-Planar Vertex Stream, VertexFlags, bit-plane blocks (Y, Cb, Cr, A), procedural noise layers.
+- **Compression:** applied to the payload as a single block (Zstandard or raw).
+
+---
+
+## Usage
+
+### For Engines / Renderers
+
+- Support both modes (Artistic/Data) via the `ContentClass` flag.
+- Implement deterministic rasterization: fills-then-holes rule, pixel-center sampling, Q24.8 arithmetic.
+- Mipmapping: prune the lowest bit-planes and shift coordinates (truncation or rounding — per the `CoordinateRounding` flag).
+- At `M ≥ 8`: use the constant value 128 (0 for signed channels) and apply noise layers if present.
+
+### For Encoders
+
+- Strictly follow the pipeline order and bit-plane semantics.
+- Use RDO to choose between splines and procedural layers.
+- Ensure determinism: identical inputs and parameters must produce an identical bitstream.
+- For Data mode: disable (or minimize) the bilateral filter, keep `ε ≤ 0.5`, avoid redundant noise layers.
+
+---
+
+## Limitations & Disclaimers
+
+- Normal maps are an experimental zone: lighting artifacts are possible. Do not rely on this format for physically accurate PBR maps.
+- Bit 13 of `FlagsAndCount` is reserved for gradient fills: 1.1 decoders must reject files with this bit set.
+- Canvas size: up to 65535 per axis.
+- Points per spline: up to 8191.
+
+---
+
+## Roadmap
+
+1. **Gradient fills (1.2).** Analytic transition profile between guide curves — to eliminate banding on smooth gradients.
+2. **Tiling and progressive loading.** Partial decoding of very large textures.
+3. **HDR (>8 bits).** Header extension and plane semantics.
+4. **Generator test vectors and conformance tests.** Golden files for verifying determinism.
+
+---
+
+## Resources
+
+- **SPECIFICATION.md** — the full format specification (binary format, pipeline, rasterization, determinism).
+- **Reference implementation (planned):** a Python encoder/decoder for 1.1 with the 32-byte header, Bit-Planar stream, CRC32, and deterministic generators.
