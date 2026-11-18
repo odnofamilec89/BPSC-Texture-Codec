@@ -1,3 +1,5 @@
+Sorry, guys. prototype v_16 is too slow and glitchy. U can try v15_oldfilter - it is ok. 
+
 # BPSC 1.1 — Bit-Plane Spline & Procedural Codec
 
 An asymmetric vector-procedural texture compression format: minimal bytes on disk, evaluation on the fly on the GPU, and zero-cost mipmaps via bit-plane pruning.
