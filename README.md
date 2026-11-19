@@ -1,4 +1,4 @@
-Sorry, guys. prototype v_16 is too slow and glitchy. U can try v15_oldfilter - it is ok. 
+Sorry, guys. prototype v_16 is too slow and glitchy. U can try v15_oldfilter - it is ok. v15_surface provides more accurate geometry. More curves in geometry planned in future - current amount less than 30% and too slow. 
 
 # BPSC 1.1 — Bit-Plane Spline & Procedural Codec
 
